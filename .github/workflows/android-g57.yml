@@ -154,7 +154,7 @@ jobs:
             -Dzstd=disabled \
             -Dmesa-clc=system -Dprecomp-compiler=system \
             -Dbuild-tests=false \
-            -Dallow-fallback-for=libdrm,expat,zlib \
+            -Dallow-fallback-for=libdrm \
             -Dlibdrm:default_library=static \
             -Dexpat:default_library=static \
             -Dzlib:default_library=static \
