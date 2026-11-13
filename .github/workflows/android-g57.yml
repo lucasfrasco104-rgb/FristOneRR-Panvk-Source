@@ -127,6 +127,8 @@ jobs:
 
           [properties]
           platform-sdk-version = ${API}
+          # Never pick up the x86 libraries of the build machine.
+          pkg_config_libdir = ['/nonexistent']
           EOF
           cat android-ndk-cross.txt
 
@@ -152,6 +154,10 @@ jobs:
             -Dzstd=disabled \
             -Dmesa-clc=system -Dprecomp-compiler=system \
             -Dbuild-tests=false \
+            -Dallow-fallback-for=libdrm,expat,zlib \
+            -Dlibdrm:default_library=static \
+            -Dexpat:default_library=static \
+            -Dzlib:default_library=static \
             --wrap-mode=default
 
       - name: Compile
