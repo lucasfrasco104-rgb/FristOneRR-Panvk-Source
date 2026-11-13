@@ -171,6 +171,9 @@ jobs:
         run: |
           SO="$(find "${OUT_DIR}" -name 'libvulkan_panfrost.so' | head -n1)"
           test -n "${SO}"
+          # Unique, easy-to-recognise name for every build.
+          DRV_NAME="PanVK-G57-RE4-b${GITHUB_RUN_NUMBER}"
+          echo "DRV_NAME=${DRV_NAME}" >> "${GITHUB_ENV}"
           mkdir -p pkg
           cp "${SO}" pkg/libvulkan_panfrost.so
           "${TOOLBIN}/llvm-strip" --strip-unneeded pkg/libvulkan_panfrost.so
@@ -178,19 +181,19 @@ jobs:
           cat > pkg/meta.json <<EOF
           {
             "author": "custom RE4 build",
-            "description": "PanVK for Mali-G57 (kbase) with RE4 UHD profile",
-            "driverVersion": "Mesa 26.3.0-devel / Mali-G57-re4",
+            "description": "PanVK Mali-G57 build ${GITHUB_RUN_NUMBER} (RE4 profile opt-in: PANVK_PROFILE=re4)",
+            "driverVersion": "Mesa 26.3.0-devel / G57-RE4 b${GITHUB_RUN_NUMBER}",
             "libraryName": "libvulkan_panfrost.so",
             "minApi": ${API},
-            "name": "Panvk-Mali-G57-RE4",
-            "packageVersion": "Panvk-Mali-G57-RE4",
+            "name": "${DRV_NAME}",
+            "packageVersion": "${DRV_NAME}",
             "sanitizedArtifactSha256": "${SHA}",
             "schemaVersion": 1,
             "vendor": "Mesa"
           }
           EOF
           readelf -d pkg/libvulkan_panfrost.so | grep -E 'NEEDED|SONAME' || true
-          (cd pkg && zip -9 ../Panvk-Mali-G57-RE4.zip libvulkan_panfrost.so meta.json)
+          (cd pkg && zip -9 "../${DRV_NAME}.zip" libvulkan_panfrost.so meta.json)
 
       - name: Diagnostic report (compare with the stock driver)
         shell: bash
@@ -210,5 +213,5 @@ jobs:
       - name: Upload driver package
         uses: actions/upload-artifact@v4
         with:
-          name: Panvk-Mali-G57-RE4
-          path: Panvk-Mali-G57-RE4.zip
+          name: ${{ env.DRV_NAME }}
+          path: ${{ env.DRV_NAME }}.zip
