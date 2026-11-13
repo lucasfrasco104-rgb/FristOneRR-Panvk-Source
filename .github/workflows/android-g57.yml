@@ -1,0 +1,168 @@
+---
+# Android (bionic) build of PanVK for Mali-G57 / JM kbase, for Winlator-style
+# emulators. The other workflows in this repo build Linux (glibc) packages
+# and cannot produce this file.
+#
+# EXPERIMENTAL / UNTESTED: written without access to an NDK, so the first
+# run may need small fixes. Read the log of the first failing step.
+name: PanVK Android G57 (NDK)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      api_level:
+        description: Android API level to target
+        required: false
+        default: '35'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      API: ${{ inputs.api_level || '35' }}
+      HOST_DIR: ${{ github.workspace }}/build-host
+      HOST_PREFIX: ${{ github.workspace }}/host-prefix
+      OUT_DIR: ${{ github.workspace }}/build-android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+            bison flex build-essential cmake ninja-build pkgconf \
+            python3 python3-mako python3-packaging python3-pip \
+            python3-setuptools python3-yaml glslang-tools spirv-tools \
+            bindgen cargo rustc llvm-dev libclang-dev libclang-cpp-dev \
+            libelf-dev libexpat1-dev zlib1g-dev libzstd-dev libdrm-dev
+          LLVM_MAJOR="$(llvm-config --version | cut -d. -f1)"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+            "libclc-${LLVM_MAJOR}-dev" "libllvmspirvlib-${LLVM_MAJOR}-dev"
+          python3 -m pip install --break-system-packages 'meson>=1.4.0,<2'
+
+      # Tools that run on the build machine: mesa_clc, vtn_bindgen2 and the
+      # precompiled-shader compiler.
+      - name: Build host tools (mesa_clc and friends)
+        shell: bash
+        run: |
+          meson setup "${HOST_DIR}" \
+            --prefix "${HOST_PREFIX}" \
+            --buildtype release \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers=panfrost \
+            -Dpanfrost-kmds=kbase \
+            -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+            -Dllvm=enabled \
+            -Dmesa-clc=enabled -Dinstall-mesa-clc=true \
+            -Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true \
+            -Dbuild-tests=false
+          meson install -C "${HOST_DIR}" --no-rebuild || \
+            ninja -C "${HOST_DIR}" install
+          ls -la "${HOST_PREFIX}/bin"
+
+      - name: Locate the Android NDK
+        shell: bash
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [[ -z "${NDK}" || ! -d "${NDK}" ]]; then
+            echo "No NDK found on this runner" >&2
+            exit 1
+          fi
+          echo "NDK=${NDK}" >> "${GITHUB_ENV}"
+          echo "TOOLBIN=${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin" \
+            >> "${GITHUB_ENV}"
+
+      - name: Write the meson cross file
+        shell: bash
+        run: |
+          cat > android-ndk-cross.txt <<EOF
+          [binaries]
+          c = ['${TOOLBIN}/aarch64-linux-android${API}-clang']
+          cpp = ['${TOOLBIN}/aarch64-linux-android${API}-clang++', '-static-libstdc++']
+          ar = '${TOOLBIN}/llvm-ar'
+          strip = '${TOOLBIN}/llvm-strip'
+          pkg-config = 'pkg-config'
+
+          [host_machine]
+          system = 'android'
+          cpu_family = 'aarch64'
+          cpu = 'armv8-a'
+          endian = 'little'
+
+          [built-in options]
+          c_args = ['-O2']
+          cpp_args = ['-O2']
+
+          [properties]
+          platform-sdk-version = ${API}
+          EOF
+          cat android-ndk-cross.txt
+
+      - name: Configure Android build
+        shell: bash
+        run: |
+          export PATH="${HOST_PREFIX}/bin:${PATH}"
+          meson setup "${OUT_DIR}" \
+            --cross-file android-ndk-cross.txt \
+            --buildtype release \
+            -Dplatforms=android \
+            -Dplatform-sdk-version="${API}" \
+            -Dandroid-stub=true \
+            -Dgallium-drivers= \
+            -Dvulkan-drivers=panfrost \
+            -Dpanfrost-kmds=kbase \
+            -Dvulkan-layers= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+            -Dllvm=disabled \
+            -Dzstd=disabled \
+            -Dmesa-clc=system -Dprecomp-compiler=system \
+            -Dbuild-tests=false \
+            --wrap-mode=default
+
+      - name: Compile
+        shell: bash
+        run: |
+          export PATH="${HOST_PREFIX}/bin:${PATH}"
+          ninja -C "${OUT_DIR}" -j "$(nproc)"
+
+      - name: Package driver
+        shell: bash
+        run: |
+          SO="$(find "${OUT_DIR}" -name 'libvulkan_panfrost.so' | head -n1)"
+          test -n "${SO}"
+          mkdir -p pkg
+          cp "${SO}" pkg/libvulkan_panfrost.so
+          "${TOOLBIN}/llvm-strip" --strip-unneeded pkg/libvulkan_panfrost.so
+          SHA="$(sha256sum pkg/libvulkan_panfrost.so | cut -d' ' -f1)"
+          cat > pkg/meta.json <<EOF
+          {
+            "author": "custom RE4 build",
+            "description": "PanVK for Mali-G57 (kbase) with RE4 UHD profile",
+            "driverVersion": "Mesa 26.3.0-devel / Mali-G57-re4",
+            "libraryName": "libvulkan_panfrost.so",
+            "minApi": ${API},
+            "name": "Panvk-Mali-G57-RE4",
+            "packageVersion": "Panvk-Mali-G57-RE4",
+            "sanitizedArtifactSha256": "${SHA}",
+            "schemaVersion": 1,
+            "vendor": "Mesa"
+          }
+          EOF
+          readelf -d pkg/libvulkan_panfrost.so | grep -E 'NEEDED|SONAME' || true
+          (cd pkg && zip -9 ../Panvk-Mali-G57-RE4.zip libvulkan_panfrost.so meta.json)
+
+      - name: Upload driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Panvk-Mali-G57-RE4
+          path: Panvk-Mali-G57-RE4.zip
