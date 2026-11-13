@@ -54,7 +54,7 @@ jobs:
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             --no-install-recommends \
-            bison flex build-essential cmake ninja-build pkgconf \
+            bison flex build-essential clang cmake ninja-build pkgconf \
             python3 python3-mako python3-packaging python3-pip \
             python3-setuptools python3-yaml glslang-tools spirv-tools \
             bindgen cargo rustc llvm-dev libclang-dev libclang-cpp-dev \
@@ -69,6 +69,11 @@ jobs:
       # precompiled-shader compiler.
       - name: Build host tools (mesa_clc and friends)
         shell: bash
+        # Mesa's SPIRV-Tools check uses clang-only warning flags, so gcc
+        # makes it fail even though SPIRV-Tools is new enough.
+        env:
+          CC: clang
+          CXX: clang++
         run: |
           meson setup "${HOST_DIR}" \
             --prefix "${HOST_PREFIX}" \
@@ -126,6 +131,9 @@ jobs:
 
       - name: Configure Android build
         shell: bash
+        env:
+          CC: clang
+          CXX: clang++
         run: |
           export PATH="${HOST_PREFIX}/bin:${PATH}"
           meson setup "${OUT_DIR}" \
