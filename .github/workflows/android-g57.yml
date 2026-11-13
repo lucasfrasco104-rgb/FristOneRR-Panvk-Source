@@ -12,6 +12,7 @@ name: PanVK Android G57 (NDK)
     branches: [master]
     paths:
       - '.github/workflows/android-g57.yml'
+      - 'meson.build'
       - 'src/panfrost/**'
   workflow_dispatch:
     inputs:
