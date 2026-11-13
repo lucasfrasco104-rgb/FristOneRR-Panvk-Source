@@ -23,7 +23,7 @@ name: PanVK Android G57 (NDK)
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -92,25 +92,44 @@ jobs:
             ninja -C "${HOST_DIR}" install
           ls -la "${HOST_PREFIX}/bin"
 
-      - name: Download the Android NDK
+      - name: Download the Android NDK (the original driver used r29)
         shell: bash
         run: |
-          curl -fsSL -o ndk.zip \
-            https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          for v in r29 r28c r27c; do
+            if curl -fsSL -o ndk.zip \
+                "https://dl.google.com/android/repository/android-ndk-${v}-linux.zip"; then
+              echo "Using NDK ${v}"
+              break
+            fi
+          done
+          test -s ndk.zip
           unzip -q ndk.zip -d "${RUNNER_TEMP}"
-          NDK="${RUNNER_TEMP}/android-ndk-r27c"
+          NDK="$(echo "${RUNNER_TEMP}"/android-ndk-*)"
           test -d "${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "NDK=${NDK}" >> "${GITHUB_ENV}"
           echo "TOOLBIN=${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin" \
             >> "${GITHUB_ENV}"
 
-      - name: Write the meson cross file
+      # Two variants of the same source, configured like the original release
+      # (tools/fristonerr/build-options.txt):
+      #   a: C++ runtime shared (libc++_shared.so), like the original driver
+      #   b: C++ runtime linked statically (fallback if a does not load)
+      - name: Build driver variants
         shell: bash
+        env:
+          CC: clang
+          CXX: clang++
         run: |
-          cat > android-ndk-cross.txt <<EOF
+          set -euo pipefail
+          export PATH="${HOST_PREFIX}/bin:${PATH}"
+
+          build_variant() {
+            local V="$1" CPPLINK="$2"
+            local OUT="${GITHUB_WORKSPACE}/build-android-${V}"
+            cat > "cross-${V}.txt" <<EOF
           [binaries]
           c = ['${TOOLBIN}/aarch64-linux-android${API}-clang']
-          cpp = ['${TOOLBIN}/aarch64-linux-android${API}-clang++', '-static-libstdc++']
+          cpp = ['${TOOLBIN}/aarch64-linux-android${API}-clang++'${CPPLINK}]
           ar = '${TOOLBIN}/llvm-ar'
           strip = '${TOOLBIN}/llvm-strip'
           pkg-config = 'pkg-config'
@@ -122,96 +141,101 @@ jobs:
           endian = 'little'
 
           [built-in options]
-          c_args = ['-O2']
-          cpp_args = ['-O2']
 
           [properties]
-          platform-sdk-version = ${API}
-          # Never pick up the x86 libraries of the build machine.
+          platform-sdk-version = '${API}'
           pkg_config_libdir = ['/nonexistent']
           EOF
-          cat android-ndk-cross.txt
+            meson setup "${OUT}" --cross-file "cross-${V}.txt" \
+              -Dsplit-debug=disabled \
+              -Dplatforms=android -Dandroid-stub=true -Dandroid-strict=true \
+              -Dplatform-sdk-version="${API}" \
+              -Dgallium-drivers= \
+              -Dvulkan-drivers=panfrost -Dpanfrost-kmds=kbase \
+              -Dshader-cache-default=true \
+              -Dvulkan-manifest-per-architecture=true \
+              -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+              -Dllvm=disabled \
+              -Dzlib=enabled -Dexecmem=true -Dperfetto=false \
+              -Dpanfrost-rust=false \
+              -Dmesa-clc=system -Dprecomp-compiler=system \
+              -Dinstall-mesa-clc=false -Dinstall-precomp-compiler=false \
+              -Dbuild-tests=false \
+              -Dallow-fallback-for=libdrm \
+              -Dlibdrm:default_library=static \
+              -Dexpat:default_library=static \
+              -Dzlib:default_library=static \
+              --wrap-mode=default
+            ninja -C "${OUT}" -j "$(nproc)"
+          }
 
-      - name: Configure Android build
-        shell: bash
-        env:
-          CC: clang
-          CXX: clang++
-        run: |
-          export PATH="${HOST_PREFIX}/bin:${PATH}"
-          meson setup "${OUT_DIR}" \
-            --cross-file android-ndk-cross.txt \
-            --buildtype release \
-            -Dplatforms=android \
-            -Dplatform-sdk-version="${API}" \
-            -Dandroid-stub=true \
-            -Dgallium-drivers= \
-            -Dvulkan-drivers=panfrost \
-            -Dpanfrost-kmds=kbase \
-            -Dvulkan-layers= \
-            -Dglx=disabled -Degl=disabled -Dgbm=disabled \
-            -Dllvm=disabled \
-            -Dzstd=disabled \
-            -Dmesa-clc=system -Dprecomp-compiler=system \
-            -Dbuild-tests=false \
-            -Dallow-fallback-for=libdrm \
-            -Dlibdrm:default_library=static \
-            -Dexpat:default_library=static \
-            -Dzlib:default_library=static \
-            --wrap-mode=default
+          build_variant a ""
+          build_variant b ", '-static-libstdc++'"
 
-      - name: Compile
+      - name: Package drivers
         shell: bash
         run: |
-          export PATH="${HOST_PREFIX}/bin:${PATH}"
-          ninja -C "${OUT_DIR}" -j "$(nproc)"
-
-      - name: Package driver
-        shell: bash
-        run: |
-          SO="$(find "${OUT_DIR}" -name 'libvulkan_panfrost.so' | head -n1)"
-          test -n "${SO}"
-          # Unique, easy-to-recognise name for every build.
-          DRV_NAME="PanVK-G57-RE4-b${GITHUB_RUN_NUMBER}"
-          echo "DRV_NAME=${DRV_NAME}" >> "${GITHUB_ENV}"
-          mkdir -p pkg
-          cp "${SO}" pkg/libvulkan_panfrost.so
-          "${TOOLBIN}/llvm-strip" --strip-unneeded pkg/libvulkan_panfrost.so
-          SHA="$(sha256sum pkg/libvulkan_panfrost.so | cut -d' ' -f1)"
-          cat > pkg/meta.json <<EOF
+          set -euo pipefail
+          mkdir -p publish
+          for V in a b; do
+            NAME="Panvk-RE4-b${GITHUB_RUN_NUMBER}${V}"
+            SO="$(find "${GITHUB_WORKSPACE}/build-android-${V}" -name 'libvulkan_panfrost.so' | head -n1)"
+            test -n "${SO}"
+            D="pkg-${V}"
+            mkdir -p "${D}"
+            cp "${SO}" "${D}/libvulkan_panfrost.so"
+            # Like the original: keep the symbol table, drop only debug info.
+            "${TOOLBIN}/llvm-strip" --strip-debug "${D}/libvulkan_panfrost.so"
+            SHA="$(sha256sum "${D}/libvulkan_panfrost.so" | cut -d' ' -f1)"
+            cat > "${D}/meta.json" <<EOF
           {
             "author": "custom RE4 build",
-            "description": "PanVK Mali-G57 build ${GITHUB_RUN_NUMBER} (RE4 profile opt-in: PANVK_PROFILE=re4)",
-            "driverVersion": "Mesa 26.3.0-devel / G57-RE4 b${GITHUB_RUN_NUMBER}",
+            "description": "PanVK for Mali-G57 (kbase), build ${GITHUB_RUN_NUMBER}${V}",
+            "driverVersion": "Mesa 26.3.0-devel / Mali-G57-RE4-b${GITHUB_RUN_NUMBER}${V}",
             "libraryName": "libvulkan_panfrost.so",
             "minApi": ${API},
-            "name": "${DRV_NAME}",
-            "packageVersion": "${DRV_NAME}",
+            "name": "${NAME}",
+            "packageVersion": "${NAME}",
             "sanitizedArtifactSha256": "${SHA}",
             "schemaVersion": 1,
             "vendor": "Mesa"
           }
           EOF
-          readelf -d pkg/libvulkan_panfrost.so | grep -E 'NEEDED|SONAME' || true
-          (cd pkg && zip -9 "../${DRV_NAME}.zip" libvulkan_panfrost.so meta.json)
-
-      - name: Diagnostic report (compare with the stock driver)
-        shell: bash
-        run: |
-          F=pkg/libvulkan_panfrost.so
-          ls -l "${F}"
-          echo "--- NEEDED"; readelf -d "${F}" | grep NEEDED || true
-          echo "--- WSI symbols (stock driver: headless only)"
-          for p in wsi_headless wsi_x11 wsi_wl xcb_ wsi_display; do
-            printf '%s: ' "$p"; "${TOOLBIN}/llvm-nm" -D "${F}" 2>/dev/null | grep -c "$p" || true
+            (cd "${D}" && zip -9 "../publish/${NAME}.zip" libvulkan_panfrost.so meta.json)
+            cp "${D}/libvulkan_panfrost.so" "publish/${NAME}.so"
+            {
+              echo "== ${NAME}"; ls -l "${D}/libvulkan_panfrost.so"
+              readelf -d "${D}/libvulkan_panfrost.so" | grep -E 'NEEDED|SONAME|RUNPATH|RPATH' || true
+              readelf -l -W "${D}/libvulkan_panfrost.so" | grep -E 'TLS|LOAD' || true
+              readelf -p .comment "${D}/libvulkan_panfrost.so" | head -6 || true
+            } | tee "publish/${NAME}.info.txt"
           done
-          echo "--- PANVK_ variables read by this build"
-          strings -n 6 "${F}" | grep -E '^(PANVK_|PAN_)[A-Z0-9_]+$' | sort -u
-          echo "--- Vulkan entry"
-          "${TOOLBIN}/llvm-nm" -D "${F}" | grep -E 'vk_icdGetInstanceProcAddr|vk_icdNegotiate' || true
+          ls -l publish
 
-      - name: Upload driver package
+      - name: Publish build files to the 'builds' branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git clone -q --depth 1 --branch builds "${URL}" builds-repo 2>/dev/null; then
+            git init -q -b builds builds-repo
+            git -C builds-repo remote add origin "${URL}"
+          fi
+          mkdir -p "builds-repo/b${GITHUB_RUN_NUMBER}"
+          cp publish/* "builds-repo/b${GITHUB_RUN_NUMBER}/"
+          cd builds-repo
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -q -m "builds: b${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})"
+          git push -q origin builds
+          echo "Published to branch 'builds', folder b${GITHUB_RUN_NUMBER}"
+
+      - name: Upload driver packages
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.DRV_NAME }}
-          path: ${{ env.DRV_NAME }}.zip
+          name: Panvk-RE4-b${{ github.run_number }}
+          path: publish/*.zip
