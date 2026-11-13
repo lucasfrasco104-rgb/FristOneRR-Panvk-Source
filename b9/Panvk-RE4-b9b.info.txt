@@ -1,0 +1,22 @@
+== Panvk-RE4-b9b
+-rwxr-xr-x 1 root root 16636816 Nov 13 22:27 pkg-b/libvulkan_panfrost.so
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../../android_stub]
+ 0x0000000000000001 (NEEDED)             Shared library: [liblog.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libhardware.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libnativewindow.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libsync.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libz.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so]
+ 0x000000000000000e (SONAME)             Library soname: [libvulkan_panfrost.so]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x9ef3bc 0x9ef3bc R   0x4000
+  LOAD           0x9ef3c0 0x00000000009f33c0 0x00000000009f33c0 0x466f40 0x466f40 R E 0x4000
+  LOAD           0xe56300 0x0000000000e5e300 0x0000000000e5e300 0x067f98 0x068d00 RW  0x4000
+  LOAD           0xebe298 0x0000000000eca298 0x0000000000eca298 0x008830 0x00c2c8 RW  0x4000
+  TLS            0xe56300 0x0000000000e5a300 0x0000000000e5a300 0x000000 0x0000b4 R   0x40
+
+String dump of section '.comment':
+  [     0]  Android (13989888, +pgo, +bolt, +lto, +mlgo, based on r563880c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349)
+  [    b9]  Linker: LLD 21.0.0 (/mnt/disks/build-disk/src/googleplex-android/llvm-r563880-release/out/llvm-project/llvm 5e96669f06077099aa41290cdb4c5e6fa0f59349)
+
