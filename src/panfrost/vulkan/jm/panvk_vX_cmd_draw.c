@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include "../panvk_profile.h"
 /*
  * Copyright © 2024 Collabora Ltd.
  * Copyright © 2026 NXP
@@ -2348,7 +2349,9 @@ v9_emit_malloc_vertex_job(struct panvk_cmd_buffer *cmdbuf,
          static int force_early = -1;
          if (force_early < 0) {
             const char *e = getenv("PANVK_FORCE_EARLYZS");
-            force_early = e && e[0] == '1';
+            /* RE4 profile: the briefcase screen is overdraw-bound on
+             * Mali-G57, so default to early-Z unless explicitly set. */
+            force_early = e ? (e[0] == '1') : panvk_profile_re4();
          }
          const bool late_zs = !force_early &&
             !fs->info.fs.early_fragment_tests &&
