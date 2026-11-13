@@ -192,6 +192,21 @@ jobs:
           readelf -d pkg/libvulkan_panfrost.so | grep -E 'NEEDED|SONAME' || true
           (cd pkg && zip -9 ../Panvk-Mali-G57-RE4.zip libvulkan_panfrost.so meta.json)
 
+      - name: Diagnostic report (compare with the stock driver)
+        shell: bash
+        run: |
+          F=pkg/libvulkan_panfrost.so
+          ls -l "${F}"
+          echo "--- NEEDED"; readelf -d "${F}" | grep NEEDED || true
+          echo "--- WSI symbols (stock driver: headless only)"
+          for p in wsi_headless wsi_x11 wsi_wl xcb_ wsi_display; do
+            printf '%s: ' "$p"; "${TOOLBIN}/llvm-nm" -D "${F}" 2>/dev/null | grep -c "$p" || true
+          done
+          echo "--- PANVK_ variables read by this build"
+          strings -n 6 "${F}" | grep -E '^(PANVK_|PAN_)[A-Z0-9_]+$' | sort -u
+          echo "--- Vulkan entry"
+          "${TOOLBIN}/llvm-nm" -D "${F}" | grep -E 'vk_icdGetInstanceProcAddr|vk_icdNegotiate' || true
+
       - name: Upload driver package
         uses: actions/upload-artifact@v4
         with:

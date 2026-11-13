@@ -539,9 +539,6 @@ get_device_heaps(struct panvk_physical_device *device,
       if (os_get_total_physical_memory(&total_ram) && total_ram) {
          want = total_ram / 4;
          want = CLAMP(want, 1024ull * MiB, 3072ull * MiB);
-         /* RE4 profile: cap what DXVK sees so it stops over-allocating. */
-         if (panvk_profile_re4())
-            want = MIN2(want, 1024ull * MiB);
       }
       const char *e = getenv("PANVK_HEAP_MB");
       if (e && atoi(e) >= 256 && atoi(e) <= 16384)

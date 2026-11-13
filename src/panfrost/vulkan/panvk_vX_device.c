@@ -599,7 +599,7 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
 
 #if PAN_ARCH <= 9
    {
-      uint64_t tiler_heap_mb = panvk_profile_re4() ? 256 : 512;
+      uint64_t tiler_heap_mb = 512;
       const char *e = getenv("PANVK_TILER_HEAP_MB");
       if (e && atoi(e) >= 16 && atoi(e) <= 2048)
          tiler_heap_mb = atoi(e);
