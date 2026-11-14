@@ -2349,9 +2349,13 @@ v9_emit_malloc_vertex_job(struct panvk_cmd_buffer *cmdbuf,
          static int force_early = -1;
          if (force_early < 0) {
             const char *e = getenv("PANVK_FORCE_EARLYZS");
-            /* RE4 profile: the briefcase screen is overdraw-bound on
-             * Mali-G57, so default to early-Z unless explicitly set. */
-            force_early = e ? (e[0] == '1') : panvk_profile_re4();
+            /* Forcing early ZS only changes anything for shaders that can
+             * discard or write depth/stencil/coverage, and for exactly those
+             * it is wrong: depth/stencil gets updated for fragments that the
+             * shader then kills (alpha-tested UI such as the RE4 briefcase
+             * screen shows holes/garbage).  Never a default, not even for a
+             * game profile: it stays an explicit debugging switch. */
+            force_early = e && e[0] == '1';
          }
          const bool late_zs = !force_early &&
             !fs->info.fs.early_fragment_tests &&
@@ -2570,8 +2574,10 @@ v9_launch_tess(struct panvk_cmd_buffer *cmdbuf,
       return VK_SUCCESS;
    }
 
-   /* Reset the device-global libpoly bump heap once per batch.  Batches are
-    * serialized on the queue, so the previous batch is done with it. */
+   /* Reset the device-global libpoly bump heap once per batch.  Batches that
+    * set poly_heap_reset are not overlapped with the previous pass by the
+    * queue submit (see v67_ov in panvk_vX_gpu_queue.c), so the previous
+    * batch is done with the heap when this reset runs. */
    if (v9_tess_stage() >= 1 && !batch->poly_heap_reset) {
       struct pan_ptr wj = panvk_cmd_alloc_desc(cmdbuf, WRITE_VALUE_JOB);
       if (!wj.gpu)

@@ -6,6 +6,10 @@
  * Without PANVK_PROFILE the driver behaves exactly like the stock build.
  *
  * It only changes DEFAULTS. Any explicit PANVK_* variable still wins.
+ *
+ * Currently it changes no default: forcing early ZS was removed from it
+ * because it breaks alpha-tested/discarding shaders (RE4 briefcase screen).
+ * PANVK_FORCE_EARLYZS=1 remains an explicit debugging switch.
  */
 #ifndef PANVK_PROFILE_H
 #define PANVK_PROFILE_H

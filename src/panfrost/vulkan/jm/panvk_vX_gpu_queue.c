@@ -125,7 +125,12 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
             queue->warmed_up = true;
          } else {
          uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
+            /* A batch that resets/uses the device-global libpoly heap
+             * (tessellation) must not start while the previous pass's
+             * fragment job may still read what that heap holds, so it
+             * keeps the fully serialized rule. */
             const bool v67_ov = panvk_overlap_enabled() && batch->frag_jc.first_job &&
+                                !batch->poly_heap_reset &&
                                 !queue->in_dep && queue->frag_warmed_up; /* v67b */
             vtc_atom = kbase_kmod_job_submit_dep(dev->kmod.dev, batch->vtc_jc.first_job, vtc_core_req, bos, nr_bos,
                 (v67_ov ? queue->half_frag_atom[batch->heap_half & 1] : /* v67b */
