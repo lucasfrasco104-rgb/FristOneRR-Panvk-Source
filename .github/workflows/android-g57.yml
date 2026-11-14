@@ -1,10 +1,14 @@
 ---
 # Android (bionic) build of PanVK for Mali-G57 / JM kbase, for Winlator-style
-# emulators. The other workflows in this repo build Linux (glibc) packages
-# and cannot produce this file.
+# emulators (WinNative). The other workflows in this repo build Linux (glibc)
+# packages and cannot produce this file.
 #
-# EXPERIMENTAL / UNTESTED: written without access to an NDK, so the first
-# run may need small fixes. Read the log of the first failing step.
+# Goal: reproduce the published release driver (Panvk-Mali-G57-beta_1.2.0) as
+# closely as possible. Several candidate configurations are built, every one
+# is checked against invariants taken from the release binary (no asserts,
+# same dynamic dependencies, same exported symbols, ELF TLS) and a compact
+# fingerprint (function sizes, imports, ELF layout) is published next to each
+# package so the candidates can be compared with the release binary.
 name: PanVK Android G57 (NDK)
 
 'on':
@@ -37,7 +41,6 @@ jobs:
       API: ${{ inputs.api_level || '35' }}
       HOST_DIR: ${{ github.workspace }}/build-host
       HOST_PREFIX: ${{ github.workspace }}/host-prefix
-      OUT_DIR: ${{ github.workspace }}/build-android
     steps:
       - name: Install base tools
         shell: bash
@@ -45,7 +48,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             --no-install-recommends \
-            ca-certificates curl git unzip zip
+            ca-certificates curl git unzip zip xz-utils
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,26 +113,61 @@ jobs:
           echo "TOOLBIN=${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin" \
             >> "${GITHUB_ENV}"
 
-      # Two variants of the same source, configured like the original release
-      # (tools/fristonerr/build-options.txt):
-      #   a: C++ runtime shared (libc++_shared.so), like the original driver
-      #   b: C++ runtime linked statically (fallback if a does not load)
-      - name: Build driver variants
+      # The release driver depends on libdrm.so, libz.so.1 and libzstd.so.1
+      # (Termux builds, found in the emulator's own library folder at run
+      # time). Those names do not exist inside the WinNative app process, so
+      # the app's GPU probe cannot load the release driver and silently falls
+      # back to the system Vulkan driver. A driver WITHOUT those dependencies
+      # does load inside the app and has been crashing it. Adding the same
+      # dependencies (empty stubs that exist only at link time) makes our
+      # build behave exactly like the release one.
+      - name: Create link-time stubs for the release driver dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          STUBS="${GITHUB_WORKSPACE}/needed-stubs"
+          mkdir -p "${STUBS}"
+          for L in libdrm.so libz.so.1 libzstd.so.1; do
+            SYM="frr_needed_stub_$(echo "${L}" | tr -c 'a-z0-9' '_')"
+            printf 'void %s(void) {}\n' "${SYM}" > "${STUBS}/stub.c"
+            "${TOOLBIN}/aarch64-linux-android${API}-clang" -shared -nostdlib \
+              -fPIC -Wl,-soname,"${L}" -o "${STUBS}/${L}" "${STUBS}/stub.c"
+          done
+          rm -f "${STUBS}/stub.c"
+          echo "STUBS=${STUBS}" >> "${GITHUB_ENV}"
+          ls -l "${STUBS}"
+
+      # Candidate configurations of the same source. The release driver has no
+      # asserts (so it is a release / NDEBUG build) and imports
+      # __stack_chk_fail (so it was built with a stack protector); everything
+      # else about its compiler flags is unknown, so the candidates cover the
+      # plausible combinations and are compared with the release binary
+      # afterwards. Format: id|buildtype|extra c/c++ flags|target API|ndebug
+      - name: Build driver candidates
         shell: bash
         env:
           CC: clang
           CXX: clang++
         run: |
-          set -euo pipefail
+          set -uo pipefail
           export PATH="${HOST_PREFIX}/bin:${PATH}"
 
+          to_array() {
+            local out="" f
+            for f in $1; do out="${out:+${out}, }'${f}'"; done
+            echo "${out}"
+          }
+
           build_variant() {
-            local V="$1" CPPLINK="$2"
+            local V="$1" BT="$2" EXTRA="$3" TAPI="$4" NDB="$5"
             local OUT="${GITHUB_WORKSPACE}/build-android-${V}"
+            local CARGS LINK
+            CARGS="$(to_array "${EXTRA}")"
+            LINK="'-L${STUBS}', '-Wl,--push-state,--no-as-needed', '-l:libdrm.so', '-l:libz.so.1', '-l:libzstd.so.1', '-Wl,--pop-state'"
             cat > "cross-${V}.txt" <<EOF
           [binaries]
-          c = ['${TOOLBIN}/aarch64-linux-android${API}-clang']
-          cpp = ['${TOOLBIN}/aarch64-linux-android${API}-clang++'${CPPLINK}]
+          c = ['${TOOLBIN}/aarch64-linux-android${TAPI}-clang']
+          cpp = ['${TOOLBIN}/aarch64-linux-android${TAPI}-clang++']
           ar = '${TOOLBIN}/llvm-ar'
           strip = '${TOOLBIN}/llvm-strip'
           pkg-config = 'pkg-config'
@@ -141,12 +179,19 @@ jobs:
           endian = 'little'
 
           [built-in options]
+          c_args = [${CARGS}]
+          cpp_args = [${CARGS}]
+          c_link_args = [${LINK}]
+          cpp_link_args = [${LINK}]
 
           [properties]
           platform-sdk-version = '${API}'
           pkg_config_libdir = ['/nonexistent']
           EOF
+            local NDBARG=""
+            if [ -n "${NDB}" ]; then NDBARG="-Db_ndebug=true"; fi
             meson setup "${OUT}" --cross-file "cross-${V}.txt" \
+              --buildtype "${BT}" ${NDBARG} \
               -Dsplit-debug=disabled \
               -Dplatforms=android -Dandroid-stub=true -Dandroid-strict=true \
               -Dplatform-sdk-version="${API}" \
@@ -165,26 +210,86 @@ jobs:
               -Dlibdrm:default_library=static \
               -Dexpat:default_library=static \
               -Dzlib:default_library=static \
-              --wrap-mode=default
-            ninja -C "${OUT}" -j "$(nproc)"
+              --wrap-mode=default \
+            && ninja -C "${OUT}" -j "$(nproc)"
           }
 
-          build_variant a ""
-          build_variant b ", '-static-libstdc++'"
+          SPECS=(
+            'a|release||35|'
+            'b|release|-fstack-protector-strong|35|'
+            'c|release|-O2 -fstack-protector-strong|35|'
+            'd|debugoptimized|-fstack-protector-strong|35|true'
+            'e|release|-fstack-protector-strong|24|'
+          )
+          : > built.txt
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r ID BT EXTRA TAPI NDB <<< "${spec}"
+            echo "::group::variant ${ID} (${BT} ${EXTRA} api${TAPI} ndebug=${NDB})"
+            if build_variant "${ID}" "${BT}" "${EXTRA}" "${TAPI}" "${NDB}"; then
+              echo "${ID}" >> built.txt
+            else
+              echo "::warning::variant ${ID} failed to build"
+            fi
+            echo "::endgroup::"
+          done
+          echo "Built variants: $(tr '\n' ' ' < built.txt)"
+          test -s built.txt
 
-      - name: Package drivers
+      - name: Check invariants and package
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p publish
-          for V in a b; do
+          NM="${TOOLBIN}/llvm-nm"
+          RE="${TOOLBIN}/llvm-readelf"
+          EXPECTED_EXPORTS=$'HMI\nvk_icdGetInstanceProcAddr\nvk_icdGetPhysicalDeviceProcAddr\nvk_icdNegotiateLoaderICDInterfaceVersion'
+          : > passed.txt
+          {
+            echo "run b${GITHUB_RUN_NUMBER} commit ${GITHUB_SHA::7}"
+            echo "variant | result | size | notes"
+          } > "publish/b${GITHUB_RUN_NUMBER}-summary.txt"
+
+          for V in $(cat built.txt); do
             NAME="Panvk-RE4-b${GITHUB_RUN_NUMBER}${V}"
             SO="$(find "${GITHUB_WORKSPACE}/build-android-${V}" -name 'libvulkan_panfrost.so' | head -n1)"
             test -n "${SO}"
             D="pkg-${V}"
-            mkdir -p "${D}"
+            mkdir -p "${D}" "diag-${V}"
+
+            # fingerprint of the unstripped file (for comparison with the release)
+            "${NM}" -S --defined-only "${SO}" > "diag-${V}/defined.txt" || true
+            "${NM}" -D --undefined-only "${SO}" > "diag-${V}/imports.txt" || true
+            "${NM}" -D --defined-only "${SO}" > "diag-${V}/exports.txt" || true
+            "${RE}" -W -h -l -S -d -n "${SO}" > "diag-${V}/elf.txt" || true
+            "${RE}" -p .comment "${SO}" >> "diag-${V}/elf.txt" || true
+            tar -cJf "publish/diag-${NAME}.tar.xz" "diag-${V}"
+
+            # invariants taken from the release binary
+            FAIL=""
+            IMPORTS="$("${NM}" -D --undefined-only "${SO}")"
+            DYN="$("${RE}" -d "${SO}")"
+            if echo "${IMPORTS}" | grep -q '__assert2'; then
+              FAIL="${FAIL} asserts-enabled"; fi
+            if echo "${IMPORTS}" | grep -q '__emutls'; then
+              FAIL="${FAIL} emulated-tls"; fi
+            for L in libdrm.so libz.so.1 libzstd.so.1 liblog.so libnativewindow.so; do
+              echo "${DYN}" | grep -q "\[${L}\]" || FAIL="${FAIL} missing-needed-${L}"
+            done
+            "${RE}" -l "${SO}" | grep -q ' TLS ' || FAIL="${FAIL} no-pt-tls"
+            GOT="$("${NM}" -D --defined-only "${SO}" | awk '{print $3}' | sort)"
+            [ "${GOT}" = "${EXPECTED_EXPORTS}" ] || FAIL="${FAIL} exports-differ"
+            echo "${IMPORTS}" | grep -q '__stack_chk_fail' || \
+              echo "note: no stack protector in ${V}" >> "${D}/notes.txt"
+
+            SIZE="$(stat -c %s "${SO}")"
+            if [ -n "${FAIL}" ]; then
+              echo "variant ${V}: FAILED invariants:${FAIL}"
+              echo "${V} | FAIL |${SIZE}| ${FAIL}" >> "publish/b${GITHUB_RUN_NUMBER}-summary.txt"
+              continue
+            fi
+
             cp "${SO}" "${D}/libvulkan_panfrost.so"
-            # Like the original: keep the symbol table, drop only debug info.
+            # Like the release: keep the symbol table, drop only debug info.
             "${TOOLBIN}/llvm-strip" --strip-debug "${D}/libvulkan_panfrost.so"
             SHA="$(sha256sum "${D}/libvulkan_panfrost.so" | cut -d' ' -f1)"
             cat > "${D}/meta.json" <<EOF
@@ -202,15 +307,19 @@ jobs:
           }
           EOF
             (cd "${D}" && zip -9 "../publish/${NAME}.zip" libvulkan_panfrost.so meta.json)
-            cp "${D}/libvulkan_panfrost.so" "publish/${NAME}.so"
             {
               echo "== ${NAME}"; ls -l "${D}/libvulkan_panfrost.so"
               readelf -d "${D}/libvulkan_panfrost.so" | grep -E 'NEEDED|SONAME|RUNPATH|RPATH' || true
               readelf -l -W "${D}/libvulkan_panfrost.so" | grep -E 'TLS|LOAD' || true
               readelf -p .comment "${D}/libvulkan_panfrost.so" | head -6 || true
-            } | tee "publish/${NAME}.info.txt"
+            } > "publish/${NAME}.info.txt" 2>&1
+            echo "${V} | ok |${SIZE}| $(cat "${D}/notes.txt" 2>/dev/null | tr '\n' ' ')" \
+              >> "publish/b${GITHUB_RUN_NUMBER}-summary.txt"
+            echo "${V}" >> passed.txt
           done
+          cat "publish/b${GITHUB_RUN_NUMBER}-summary.txt"
           ls -l publish
+          test -s passed.txt
 
       - name: Publish build files to the 'builds' branch
         shell: bash
