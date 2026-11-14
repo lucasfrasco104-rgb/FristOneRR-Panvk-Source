@@ -1,0 +1,6 @@
+run b11 commit 7a47235
+variant | result | size | notes
+a | ok |15025152| note: no stack protector in a 
+b | ok |15069408| 
+c | ok |14787456| 
+d | ok |80072656| 
